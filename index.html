@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>VocabBiz Pro - SM2算法版</title>
+    <title>VocabBiz Pro - 云同步版</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script type="importmap">
@@ -11,7 +11,10 @@
         "imports": {
             "react": "https://esm.sh/react@18.2.0",
             "react-dom/client": "https://esm.sh/react-dom@18.2.0/client",
-            "lucide-react": "https://esm.sh/lucide-react@0.294.0"
+            "lucide-react": "https://esm.sh/lucide-react@0.294.0",
+            "firebase/app": "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js",
+            "firebase/auth": "https://www.gstatic.com/firebasejs/10.7.1/firebase-auth.js",
+            "firebase/firestore": "https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js"
         }
     }
     </script>
@@ -22,6 +25,7 @@
         .rotate-y-180 { transform: rotateY(180deg); }
         .perspective-1000 { perspective: 1000px; }
         .no-scrollbar::-webkit-scrollbar { display: none; } 
+        #root { padding-bottom: 80px; } /* 防止手机端按钮被遮挡 */
     </style>
 </head>
 <body>
@@ -30,13 +34,42 @@
     <script type="text/babel" data-type="module">
         import React, { useState, useEffect } from 'react';
         import { createRoot } from 'react-dom/client';
-        import { BookOpen, Plus, BarChart3, RotateCcw, Check, X, Brain, Trash2, Home, Volume2, Quote, FileUp, Edit3, Save, AlertTriangle, Download, Search, Image, Globe, Repeat, Zap, AlertCircle } from 'lucide-react';
+        import { BookOpen, Plus, BarChart3, RotateCcw, Check, X, Brain, Trash2, Home, Volume2, Quote, FileUp, Edit3, Save, AlertTriangle, Download, Search, Image, Globe, Repeat, Zap, AlertCircle, Cloud, UploadCloud, DownloadCloud, Key } from 'lucide-react';
 
-        // --- 核心种子数据 (SM-2 格式) ---
+        import { initializeApp } from 'firebase/app';
+        import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+        import { getFirestore, doc, setDoc, getDoc } from 'firebase/firestore';
+
+        // =========================================================================
+        // ⚙️ 配置区域 (请填入您 Firebase 的配置)
+        // =========================================================================
+        const firebaseConfig = {
+  apiKey: "AIzaSyC_LC6xWmmxXv1Hrkg4iqo_wXD7qemdEBY",
+  authDomain: "vocab-db-d8413.firebaseapp.com",
+  projectId: "vocab-db-d8413",
+  storageBucket: "vocab-db-d8413.firebasestorage.app",
+  messagingSenderId: "825868753171",
+  appId: "1:825868753171:web:1a5b0dd799dba178e462e6",
+  measurementId: "G-567XLQCED3"
+};
+        // =========================================================================
+
+        // --- 初始化 Firebase ---
+        let app, auth, db;
+        let isFirebaseReady = false;
+        try {
+            if (firebaseConfig.apiKey && firebaseConfig.apiKey !== "YOUR_API_KEY") {
+                app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+                isFirebaseReady = true;
+                signInAnonymously(auth).catch(e => console.error(e));
+            }
+        } catch (e) { console.warn("Firebase skipped"); }
+
+        // --- 核心种子数据 ---
         const SEED_VOCAB = [
-            { id: 1, word: 'Acquisition', definition: 'n. 收购；获得', exEn: 'The acquisition will expand our market share.', exCn: '这次收购将扩大我们的市场份额。', familiarity: 0, nextReview: 0, easeFactor: 2.5, interval: 0, repetitions: 0 },
-            { id: 2, word: 'Benchmark', definition: 'n. 基准', exEn: 'This product sets a new benchmark for quality.', exCn: '这款产品树立了新的质量标杆。', familiarity: 0, nextReview: 0, easeFactor: 2.5, interval: 0, repetitions: 0 },
-            { id: 3, word: 'Sponsorship', definition: 'n. 赞助；发起', exEn: 'Corporate sponsorship funded the charity event.', exCn: '企业赞助为这次慈善活动提供了资金。', familiarity: 0, nextReview: 0, easeFactor: 2.5, interval: 0, repetitions: 0 },
+            { id: 1, word: 'Acquisition', definition: 'n. 收购', exEn: 'The acquisition expanded our market.', exCn: '收购扩大了市场。', familiarity: 0, nextReview: 0, easeFactor: 2.5, interval: 0, repetitions: 0 },
         ];
 
         const speakWord = (text) => {
@@ -56,44 +89,32 @@
             const [isFlipped, setIsFlipped] = useState(false);
             const [sessionStats, setSessionStats] = useState({ correct: 0, total: 0 });
             const [editingWord, setEditingWord] = useState(null); 
+            
+            // 🔥 新增：同步暗号 ID
+            const [syncId, setSyncId] = useState('');
+            const [loadingCloud, setLoadingCloud] = useState(false);
 
-            // --- 初始化与数据迁移 ---
             useEffect(() => {
-                const savedData = localStorage.getItem('vocab_biz_pro_v4');
-                // 兼容旧版本数据 key，如果 v4 没有，尝试读取 v3 或 v2
-                const oldData = localStorage.getItem('vocab_biz_pro_data_v3') || localStorage.getItem('vocab_biz_pro_data_v2');
-                
-                let initialList = [];
-                if (savedData) {
-                    initialList = JSON.parse(savedData);
-                } else if (oldData) {
-                    // 🔄 数据迁移：给旧数据加上 SM-2 必须的字段
-                    const parsedOld = JSON.parse(oldData);
-                    initialList = parsedOld.map(w => ({
-                        ...w,
-                        easeFactor: w.easeFactor || 2.5, // 默认难度系数
-                        interval: w.interval || 0,       // 默认间隔
-                        repetitions: w.repetitions || 0  // 默认连续正确数
-                    }));
-                    alert("检测到旧版数据，已自动升级为 SM-2 算法格式！");
-                } else {
-                    initialList = SEED_VOCAB;
-                }
-                setVocabList(initialList);
+                const savedData = localStorage.getItem('vocab_biz_pro_v5');
+                // 读取本地保存的同步暗号，免得每次都要输
+                const savedSyncId = localStorage.getItem('vocab_biz_sync_id');
+                if (savedSyncId) setSyncId(savedSyncId);
+
+                if (savedData) setVocabList(JSON.parse(savedData));
+                else setVocabList(SEED_VOCAB);
             }, []);
 
             useEffect(() => {
                 if (vocabList.length > 0) {
-                    localStorage.setItem('vocab_biz_pro_v4', JSON.stringify(vocabList));
+                    localStorage.setItem('vocab_biz_pro_v5', JSON.stringify(vocabList));
                 }
             }, [vocabList]);
 
             const startSession = () => {
                 const now = Date.now();
                 const dueWords = vocabList.filter(word => word.nextReview <= now);
-                if (dueWords.length === 0) { alert("太棒了！暂无待复习单词。"); return; }
+                if (dueWords.length === 0) { alert("暂无待复习单词！"); return; }
                 const sessionLimit = 30;
-                // SM-2 算法里，通常优先复习间隔短的，但为了体验我们还是随机打乱
                 const shuffled = [...dueWords].sort(() => Math.random() - 0.5).slice(0, sessionLimit);
                 setSessionQueue(shuffled);
                 setCurrentCardIndex(0);
@@ -103,102 +124,48 @@
                 setTimeout(() => speakWord(shuffled[0].word), 500);
             };
 
-            // 🔥 核心升级：SM-2 算法实现
             const handleRating = (grade) => {
-                // grade: 0=Again, 1=Hard, 2=Good, 3=Easy
                 const currentWord = sessionQueue[currentCardIndex];
-                
-                // 获取旧参数
-                let { easeFactor, repetitions, interval } = currentWord;
-                // 防御性编程：确保有默认值
-                easeFactor = easeFactor || 2.5;
-                repetitions = repetitions || 0;
-                interval = interval || 0;
-
+                let { easeFactor=2.5, repetitions=0, interval=0 } = currentWord;
                 let nextReviewDate = Date.now();
                 
-                // 1. 计算新的 SM-2 参数
                 if (grade === 0) {
-                    // 🔴 Again (重来)
-                    repetitions = 0;
-                    interval = 0; // 这里的0代表 "<1天"，设为1分钟后
-                    // 惩罚 EF 值，让它以后出现更频繁，但最低不低于 1.3
-                    easeFactor = Math.max(1.3, easeFactor - 0.2);
-                    nextReviewDate += 60 * 1000; // 1分钟后
+                    repetitions = 0; interval = 0; easeFactor = Math.max(1.3, easeFactor - 0.2); nextReviewDate += 60 * 1000;
                 } else {
-                    // 🟢 答对了 (Hard/Good/Easy)
-                    
-                    // 更新 EF 值 (标准公式)
-                    // Easy(3) -> EF 增加; Good(2) -> EF 不变; Hard(1) -> EF 减少
                     if (grade === 3) easeFactor += 0.15;
                     if (grade === 1) easeFactor = Math.max(1.3, easeFactor - 0.15);
-
-                    // 更新间隔 (Interval) - 单位：天
-                    if (repetitions === 0) {
-                        interval = 1; // 第一次答对，间隔1天
-                    } else if (repetitions === 1) {
-                        interval = 6; // 第二次答对，间隔6天
-                    } else {
-                        // 之后：间隔 = 上次间隔 * EF
+                    if (repetitions === 0) interval = 1;
+                    else if (repetitions === 1) interval = 6;
+                    else {
                         let modifier = 1;
-                        if (grade === 1) modifier = 1.2; // Hard: 增长慢
-                        if (grade === 2) modifier = easeFactor; // Good: 正常增长
-                        if (grade === 3) modifier = easeFactor * 1.3; // Easy: 飞速增长
-                        
+                        if (grade === 1) modifier = 1.2;
+                        if (grade === 2) modifier = easeFactor;
+                        if (grade === 3) modifier = easeFactor * 1.3;
                         interval = Math.ceil(interval * modifier);
                     }
                     repetitions += 1;
-                    nextReviewDate += interval * 24 * 60 * 60 * 1000; // 转换为毫秒
+                    nextReviewDate += interval * 24 * 60 * 60 * 1000;
                 }
 
-                // 2. 更新单词列表
-                const updatedList = vocabList.map(w => 
-                    w.id === currentWord.id 
-                        ? { ...w, nextReview: nextReviewDate, easeFactor, interval, repetitions } 
-                        : w
-                );
+                const updatedList = vocabList.map(w => w.id === currentWord.id ? { ...w, nextReview: nextReviewDate, easeFactor, interval, repetitions } : w);
                 setVocabList(updatedList);
+                setSessionStats(prev => ({ correct: grade >= 2 ? prev.correct + 1 : prev.correct, total: prev.total + 1 }));
 
-                // 3. 更新统计
-                setSessionStats(prev => ({ 
-                    correct: grade >= 2 ? prev.correct + 1 : prev.correct, 
-                    total: prev.total + 1 
-                }));
-
-                // 4. 切换下一张
                 if (currentCardIndex < sessionQueue.length - 1) {
                     setIsFlipped(false);
-                    setTimeout(() => {
-                        setCurrentCardIndex(prev => prev + 1);
-                        speakWord(sessionQueue[currentCardIndex + 1].word);
-                    }, 200);
-                } else {
-                    setView('summary');
-                }
+                    setTimeout(() => { setCurrentCardIndex(prev => prev + 1); speakWord(sessionQueue[currentCardIndex + 1].word); }, 200);
+                } else { setView('summary'); }
             };
 
-            // --- 增删改查 (保持不变) ---
             const handleSaveWord = (wordData) => {
-                if (editingWord) {
-                    setVocabList(prev => prev.map(w => w.id === editingWord.id ? { ...w, ...wordData } : w));
-                    setEditingWord(null);
-                    alert("修改成功！");
-                } else {
-                    // 新词默认参数
-                    const newWord = { id: Date.now(), ...wordData, easeFactor: 2.5, interval: 0, repetitions: 0, nextReview: 0 };
-                    setVocabList(prev => [...prev, newWord]);
-                }
+                if (editingWord) { setVocabList(prev => prev.map(w => w.id === editingWord.id ? { ...w, ...wordData } : w)); setEditingWord(null); alert("修改成功！"); } 
+                else { setVocabList(prev => [...prev, { id: Date.now(), ...wordData, easeFactor: 2.5, interval: 0, repetitions: 0, nextReview: 0 }]); }
                 setView('stats'); 
             };
 
             const handleDelete = (id) => { if(confirm('确定删除？')) setVocabList(prev => prev.filter(w => w.id !== id)); };
             const startEdit = (word) => { setEditingWord(word); setView('add'); };
-            const handleResetAll = () => {
-                if (prompt("⚠️ 确认清空请输入 'RESET'") === 'RESET') {
-                    setVocabList([]); localStorage.setItem('vocab_biz_pro_v4', JSON.stringify([])); alert("已清空");
-                }
-            };
-
+            const handleResetAll = () => { if (prompt("⚠️ 确认清空请输入 'RESET'") === 'RESET') { setVocabList([]); localStorage.setItem('vocab_biz_pro_v5', JSON.stringify([])); alert("已清空"); } };
             const handleImport = (text) => {
                 if(!text) return;
                 const lines = text.split('\n');
@@ -206,64 +173,114 @@
                 lines.forEach(line => {
                     if(!line.trim()) return;
                     let w, d, en = "", cn = "";
-                    if (line.includes('\t')) {
-                        const parts = line.split('\t');
-                        w = parts[0]?.trim(); d = parts[1]?.trim(); en = parts[2]?.trim()||""; cn = parts[3]?.trim()||"";
-                    } else {
-                        const parts = line.split(/[,，]/);
-                        w = parts[0]?.trim(); d = parts[1]?.trim(); 
-                        if (parts.length > 2) en = parts[2].trim(); if (parts.length > 3) cn = parts.slice(3).join(',').trim();
-                    }
-                    if(w && d) newWords.push({ 
-                        id: Date.now() + Math.random(), word: w, definition: d, exEn: en, exCn: cn, 
-                        easeFactor: 2.5, interval: 0, repetitions: 0, nextReview: 0 
-                    });
+                    if (line.includes('\t')) { const parts = line.split('\t'); w = parts[0]?.trim(); d = parts[1]?.trim(); en = parts[2]?.trim()||""; cn = parts[3]?.trim()||""; } 
+                    else { const parts = line.split(/[,，]/); w = parts[0]?.trim(); d = parts[1]?.trim(); if (parts.length > 2) en = parts[2].trim(); if (parts.length > 3) cn = parts.slice(3).join(',').trim(); }
+                    if(w && d) newWords.push({ id: Date.now() + Math.random(), word: w, definition: d, exEn: en, exCn: cn, easeFactor: 2.5, interval: 0, repetitions: 0, nextReview: 0 });
                 });
                 if(newWords.length > 0) { setVocabList(prev => [...prev, ...newWords]); alert(`导入 ${newWords.length} 个单词`); setView('stats'); }
             };
-
             const handleExport = () => {
                 if(vocabList.length === 0) { alert("无内容"); return; }
                 let content = "单词\t释义\t英文例句\t中文例句\n";
-                vocabList.forEach(item => {
-                    const clean = (s) => s ? s.replace(/[\r\n\t]/g, " ") : "";
-                    content += `${clean(item.word)}\t${clean(item.definition)}\t${clean(item.exEn)}\t${clean(item.exCn)}\n`;
-                });
+                vocabList.forEach(item => { const clean = (s) => s ? s.replace(/[\r\n\t]/g, " ") : ""; content += `${clean(item.word)}\t${clean(item.definition)}\t${clean(item.exEn)}\t${clean(item.exCn)}\n`; });
                 const blob = new Blob(['\uFEFF' + content], { type: 'text/plain;charset=utf-8' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = `VocabBiz_SM2_${new Date().toISOString().slice(0,10)}.txt`;
-                document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+                const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `VocabBackup.txt`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+            };
+            const openSearch = (word, type) => {
+                let url = ""; if (type === 'bing') url = `https://cn.bing.com/dict/search?q=${encodeURIComponent(word)}`; else if (type === 'images') url = `https://www.google.com/search?tbm=isch&q=${encodeURIComponent(word + " business concept")}`; else if (type === 'wiki') url = `https://en.wikipedia.org/wiki/${encodeURIComponent(word)}`; window.open(url, '_blank');
             };
 
-            const openSearch = (word, type) => {
-                let url = "";
-                if (type === 'bing') url = `https://cn.bing.com/dict/search?q=${encodeURIComponent(word)}`;
-                else if (type === 'images') url = `https://www.google.com/search?tbm=isch&q=${encodeURIComponent(word + " business concept")}`;
-                else if (type === 'wiki') url = `https://en.wikipedia.org/wiki/${encodeURIComponent(word)}`;
-                window.open(url, '_blank');
+            // 🔥 核心修改：云端同步逻辑 (使用自定义 ID)
+            const saveToCloud = async () => {
+                if (!isFirebaseReady) { alert("Firebase 未配置！"); return; }
+                if (!syncId || syncId.length < 3) { alert("请先设置一个由于3位数的同步暗号！"); return; }
+                
+                setLoadingCloud(true);
+                try {
+                    // 使用用户输入的 syncId 作为文档ID
+                    await setDoc(doc(db, 'vocab_users', syncId), { 
+                        updatedAt: Date.now(), 
+                        vocabList: vocabList 
+                    });
+                    // 保存 ID 到本地，下次不用输
+                    localStorage.setItem('vocab_biz_sync_id', syncId);
+                    alert(`✅ 备份成功！\n\n请在其他设备输入暗号 [${syncId}] 进行恢复。`);
+                } catch (e) { alert("备份失败: " + e.message); }
+                setLoadingCloud(false);
+            };
+
+            const restoreFromCloud = async () => {
+                if (!isFirebaseReady) { alert("Firebase 未配置！"); return; }
+                if (!syncId) { alert("请输入同步暗号！"); return; }
+                
+                if (!confirm(`确定从云端 [${syncId}] 恢复数据吗？\n这将覆盖当前本地数据。`)) return;
+
+                setLoadingCloud(true);
+                try {
+                    const docSnap = await getDoc(doc(db, 'vocab_users', syncId));
+                    if (docSnap.exists()) {
+                        const data = docSnap.data();
+                        setVocabList(data.vocabList || []);
+                        localStorage.setItem('vocab_biz_sync_id', syncId); // 成功恢复也保存ID
+                        alert(`🎉 恢复成功！\n数据时间: ${new Date(data.updatedAt).toLocaleString()}`);
+                    } else {
+                        alert(`❌ 云端找不到暗号 [${syncId}] 的数据。\n请检查拼写，或先在另一台设备备份。`);
+                    }
+                } catch (e) { alert("恢复失败: " + e.message); }
+                setLoadingCloud(false);
             };
 
             // --- 视图 ---
+            const CloudView = () => (
+                <div className="p-6 h-full flex flex-col max-w-md mx-auto pt-12">
+                    <h2 className="text-2xl font-bold text-gray-800 mb-6 flex items-center gap-2"><Cloud className="text-indigo-600"/> 云端同步中心</h2>
+                    
+                    {!isFirebaseReady ? (
+                        <div className="bg-red-50 text-red-600 p-4 rounded-xl text-sm mb-6">❌ 未检测到配置，无法使用云功能。</div>
+                    ) : (
+                        <div className="space-y-6">
+                            <div className="bg-white p-5 rounded-2xl shadow-sm border border-indigo-100">
+                                <label className="block text-xs font-bold text-gray-400 uppercase mb-2 flex items-center gap-1"><Key size={12}/> 设置您的同步暗号 (Sync ID)</label>
+                                <input 
+                                    className="w-full text-lg font-bold text-indigo-600 p-3 border-b-2 border-indigo-100 focus:border-indigo-500 outline-none bg-transparent placeholder-indigo-200" 
+                                    placeholder="例如: Leo888" 
+                                    value={syncId} 
+                                    onChange={e => setSyncId(e.target.value)}
+                                />
+                                <p className="text-xs text-gray-400 mt-2">在所有设备上输入相同的暗号即可同步。</p>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-4">
+                                <button onClick={saveToCloud} disabled={loadingCloud} className="bg-indigo-600 text-white p-4 rounded-xl shadow-lg flex flex-col items-center justify-center gap-2 disabled:opacity-50 active:scale-95 transition">
+                                    <UploadCloud size={24}/>
+                                    <span className="font-bold">上传备份</span>
+                                </button>
+                                <button onClick={restoreFromCloud} disabled={loadingCloud} className="bg-white border border-gray-200 text-gray-700 p-4 rounded-xl hover:bg-gray-50 flex flex-col items-center justify-center gap-2 disabled:opacity-50 active:scale-95 transition">
+                                    <DownloadCloud size={24}/>
+                                    <span className="font-bold">下载恢复</span>
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                    <button onClick={()=>setView('home')} className="mt-auto w-full py-4 bg-gray-100 rounded-xl font-bold text-gray-500 hover:bg-gray-200 transition">返回</button>
+                </div>
+            );
+
             const HomeView = () => {
                 const dueCount = vocabList.filter(w => w.nextReview <= Date.now()).length;
                 return (
                     <div className="flex flex-col items-center p-6 h-full max-w-md mx-auto relative pt-12 overflow-y-auto">
-                        <div className="mb-8 text-center">
-                            <div className="w-20 h-20 bg-indigo-600 rounded-3xl flex items-center justify-center mx-auto mb-4 shadow-lg rotate-3">
-                                <BookOpen size={40} className="text-white -rotate-3" />
-                            </div>
-                            <h1 className="text-2xl font-extrabold text-gray-800 tracking-tight">VocabBiz <span className="text-indigo-600">Pro</span></h1>
-                            <p className="text-xs text-indigo-400 font-bold tracking-wider mt-1 uppercase">Powered by SM-2 Algorithm</p>
+                        <div className="absolute top-4 right-4">
+                            <button onClick={() => setView('cloud')} className="p-2 bg-white rounded-full shadow text-indigo-500 relative hover:bg-indigo-50 transition">
+                                <Cloud size={20} />
+                            </button>
                         </div>
-                        <button onClick={startSession} className="w-full bg-indigo-600 text-white p-6 rounded-2xl shadow-xl shadow-indigo-200 mb-6 flex justify-between items-center transition hover:scale-[1.02] active:scale-95 group">
-                            <div className="text-left">
-                                <div className="text-indigo-200 text-xs font-bold uppercase tracking-wider mb-1">今日待复习</div>
-                                <div className="text-4xl font-bold group-hover:translate-x-1 transition">{dueCount}</div>
-                            </div>
-                            <RotateCcw size={32} className="opacity-80 group-hover:rotate-180 transition duration-500"/>
-                        </button>
+                        <div className="mb-8 text-center">
+                            <div className="w-20 h-20 bg-indigo-600 rounded-3xl flex items-center justify-center mx-auto mb-4 shadow-lg rotate-3"><BookOpen size={40} className="text-white -rotate-3" /></div>
+                            <h1 className="text-2xl font-extrabold text-gray-800 tracking-tight">VocabBiz <span className="text-indigo-600">Pro</span></h1>
+                            <p className="text-xs text-indigo-400 font-bold tracking-wider mt-1 uppercase">SM-2 Algorithm</p>
+                        </div>
+                        <button onClick={startSession} className="w-full bg-indigo-600 text-white p-6 rounded-2xl shadow-xl shadow-indigo-200 mb-6 flex justify-between items-center transition hover:scale-[1.02] active:scale-95 group"><div className="text-left"><div className="text-indigo-200 text-xs font-bold uppercase tracking-wider mb-1">今日待复习</div><div className="text-4xl font-bold group-hover:translate-x-1 transition">{dueCount}</div></div><RotateCcw size={32} className="opacity-80 group-hover:rotate-180 transition duration-500"/></button>
                         <div className="grid grid-cols-2 gap-4 w-full mb-6">
                             <button onClick={() => { setEditingWord(null); setView('add'); }} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex flex-col items-center gap-2 hover:bg-gray-50 active:scale-95 transition"><div className="p-2 bg-green-100 text-green-600 rounded-full"><Plus size={20}/></div><span className="text-sm font-bold text-gray-700">添加单词</span></button>
                             <button onClick={() => setView('import')} className="bg-white p-4 rounded-2xl shadow-sm border border-gray-100 flex flex-col items-center gap-2 hover:bg-gray-50 active:scale-95 transition"><div className="p-2 bg-blue-100 text-blue-600 rounded-full"><FileUp size={20}/></div><span className="text-sm font-bold text-gray-700">导入新词</span></button>
@@ -308,30 +325,11 @@
                                 </div>
                             </div>
                         </div>
-
-                        {/* 🚀 SM-2 四档按钮 */}
                         <div className={`mt-6 grid grid-cols-4 gap-2 transition-all duration-300 transform ${isFlipped ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4 pointer-events-none'}`}>
-                            
-                            <button onClick={(e) => {e.stopPropagation(); handleRating(0)}} className="flex flex-col items-center justify-center p-3 rounded-xl bg-red-50 text-red-500 border border-red-100 hover:bg-red-100 active:scale-95 transition">
-                                <Repeat size={20} className="mb-1"/>
-                                <span className="text-[10px] font-bold">重来</span>
-                            </button>
-
-                            <button onClick={(e) => {e.stopPropagation(); handleRating(1)}} className="flex flex-col items-center justify-center p-3 rounded-xl bg-orange-50 text-orange-600 border border-orange-100 hover:bg-orange-100 active:scale-95 transition">
-                                <AlertCircle size={20} className="mb-1"/>
-                                <span className="text-[10px] font-bold">困难</span>
-                            </button>
-
-                            <button onClick={(e) => {e.stopPropagation(); handleRating(2)}} className="flex flex-col items-center justify-center p-3 rounded-xl bg-blue-50 text-blue-600 border border-blue-100 hover:bg-blue-100 active:scale-95 transition">
-                                <Check size={20} className="mb-1"/>
-                                <span className="text-[10px] font-bold">一般</span>
-                            </button>
-
-                            <button onClick={(e) => {e.stopPropagation(); handleRating(3)}} className="flex flex-col items-center justify-center p-3 rounded-xl bg-green-50 text-green-600 border border-green-100 hover:bg-green-100 active:scale-95 transition">
-                                <Zap size={20} className="mb-1"/>
-                                <span className="text-[10px] font-bold">简单</span>
-                            </button>
-
+                            <button onClick={(e) => {e.stopPropagation(); handleRating(0)}} className="flex flex-col items-center justify-center p-3 rounded-xl bg-red-50 text-red-500 border border-red-100 hover:bg-red-100 active:scale-95 transition"><Repeat size={20} className="mb-1"/><span className="text-[10px] font-bold">重来</span></button>
+                            <button onClick={(e) => {e.stopPropagation(); handleRating(1)}} className="flex flex-col items-center justify-center p-3 rounded-xl bg-orange-50 text-orange-600 border border-orange-100 hover:bg-orange-100 active:scale-95 transition"><AlertCircle size={20} className="mb-1"/><span className="text-[10px] font-bold">困难</span></button>
+                            <button onClick={(e) => {e.stopPropagation(); handleRating(2)}} className="flex flex-col items-center justify-center p-3 rounded-xl bg-blue-50 text-blue-600 border border-blue-100 hover:bg-blue-100 active:scale-95 transition"><Check size={20} className="mb-1"/><span className="text-[10px] font-bold">一般</span></button>
+                            <button onClick={(e) => {e.stopPropagation(); handleRating(3)}} className="flex flex-col items-center justify-center p-3 rounded-xl bg-green-50 text-green-600 border border-green-100 hover:bg-green-100 active:scale-95 transition"><Zap size={20} className="mb-1"/><span className="text-[10px] font-bold">简单</span></button>
                         </div>
                     </div>
                 );
@@ -344,10 +342,7 @@
                 const [cn, setCn] = useState(editingWord ? editingWord.exCn || '' : '');
                 return (
                     <div className="p-6 h-full flex flex-col max-w-md mx-auto pt-8 bg-white">
-                        <h2 className="text-xl font-bold text-gray-800 mb-6 flex items-center gap-2">
-                            {editingWord ? <Edit3 className="text-indigo-600"/> : <Plus className="text-green-600"/>}
-                            {editingWord ? '修改单词' : '添加新单词'}
-                        </h2>
+                        <h2 className="text-xl font-bold text-gray-800 mb-6 flex items-center gap-2">{editingWord ? <Edit3 className="text-indigo-600"/> : <Plus className="text-green-600"/>}{editingWord ? '修改单词' : '添加新单词'}</h2>
                         <div className="flex-1 overflow-y-auto space-y-4 no-scrollbar">
                             <div><label className="block text-xs font-bold text-gray-400 uppercase mb-1">Word</label><input className="w-full p-4 border bg-gray-50 rounded-xl text-lg font-bold text-gray-800 focus:border-indigo-500 outline-none" placeholder="单词" value={w} onChange={e=>setW(e.target.value)}/></div>
                             <div><label className="block text-xs font-bold text-gray-400 uppercase mb-1">Definition</label><input className="w-full p-4 border bg-gray-50 rounded-xl text-base text-gray-800 focus:border-indigo-500 outline-none" placeholder="中文释义" value={d} onChange={e=>setD(e.target.value)}/></div>
@@ -386,10 +381,7 @@
                                 <div className="flex-1 pr-2">
                                     <div className="font-bold text-gray-800 text-lg">{item.word}</div>
                                     <div className="text-sm text-gray-600">{item.definition}</div>
-                                    <div className="flex items-center gap-2 mt-2">
-                                        <span className={`text-[10px] px-1.5 py-0.5 rounded ${item.easeFactor >= 2.5 ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'}`}>EF: {item.easeFactor.toFixed(2)}</span>
-                                        <span className="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded">Interval: {item.interval}d</span>
-                                    </div>
+                                    <div className="flex items-center gap-2 mt-2"><span className={`text-[10px] px-1.5 py-0.5 rounded ${item.easeFactor >= 2.5 ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'}`}>EF: {item.easeFactor.toFixed(2)}</span><span className="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded">Interval: {item.interval}d</span></div>
                                 </div>
                                 <div className="flex gap-1"><button onClick={() => startEdit(item)} className="text-gray-300 hover:text-indigo-600 hover:bg-indigo-50 p-2 rounded-lg transition" title="编辑"><Edit3 size={18}/></button><button onClick={() => handleDelete(item.id)} className="text-gray-300 hover:text-red-500 hover:bg-red-50 p-2 rounded-lg transition" title="删除"><Trash2 size={18}/></button></div>
                             </div>
@@ -409,7 +401,7 @@
             return (
                 <div className="h-screen w-full overflow-hidden bg-gray-50 font-sans">
                     {view === 'home' && <HomeView />} {view === 'learn' && <LearnView />} {view === 'add' && <AddEditView />}
-                    {view === 'import' && <ImportView />} {view === 'stats' && <StatsView />} {view === 'summary' && <SummaryView />}
+                    {view === 'import' && <ImportView />} {view === 'stats' && <StatsView />} {view === 'summary' && <SummaryView />} {view === 'cloud' && <CloudView />}
                 </div>
             );
         }
@@ -418,5 +410,4 @@
         root.render(<App />);
     </script>
 </body>
-
 </html>
