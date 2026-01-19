@@ -7,6 +7,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.4.4/lz-string.min.js"></script>
+    
     <script type="importmap">
     {
         "imports": {
@@ -36,11 +37,11 @@
     <script type="text/babel" data-type="module">
         import React, { useState, useEffect } from 'react';
         import { createRoot } from 'react-dom/client';
-        import { BookOpen, Plus, BarChart3, RotateCcw, Check, X, Brain, Trash2, Home, Volume2, Quote, FileUp, Edit3, Save, AlertTriangle, Download, Search, Image, Globe, Repeat, Zap, AlertCircle, Cloud, UploadCloud, DownloadCloud, Key, WifiOff, FileArchive } from 'lucide-react';
+        import { BookOpen, Plus, BarChart3, RotateCcw, Check, X, Brain, Trash2, Home, Volume2, Quote, FileUp, Edit3, Save, AlertTriangle, Download, Search, Image, Globe, Repeat, Zap, AlertCircle, Cloud, UploadCloud, DownloadCloud, Key, WifiOff, FileArchive, Layers } from 'lucide-react';
 
         import { initializeApp } from 'firebase/app';
         import { getAuth, signInAnonymously } from 'firebase/auth';
-        import { getFirestore, doc, setDoc, getDoc } from 'firebase/firestore';
+        import { getFirestore, doc, setDoc, getDoc, writeBatch } from 'firebase/firestore';
 
         // =========================================================================
         // ⚙️ 配置区域 (请填入您 Firebase 的配置)
@@ -69,6 +70,7 @@
         } catch (e) { console.warn("Firebase skipped"); }
 
         const SEED_VOCAB = [{ id: 1, word: 'Acquisition', definition: 'n. 收购', exEn: 'The acquisition expanded our market.', exCn: '收购扩大了市场。', familiarity: 0, nextReview: 0, easeFactor: 2.5, interval: 0, repetitions: 0 }];
+        const CHUNK_SIZE = 50000; // 50KB per chunk (保守设置，确保通过性)
 
         const speakWord = (text) => {
             if ('speechSynthesis' in window) {
@@ -90,6 +92,7 @@
             
             const [syncId, setSyncId] = useState('');
             const [loadingCloud, setLoadingCloud] = useState(false);
+            const [cloudStatus, setCloudStatus] = useState(''); // 显示详细进度
             
             const [inputWord, setInputWord] = useState('');
             const [inputDef, setInputDef] = useState('');
@@ -98,16 +101,25 @@
             const [importTxt, setImportTxt] = useState('');
 
             useEffect(() => {
-                const savedData = localStorage.getItem('vocab_biz_pro_v6'); // 兼容v6数据
+                const savedData = localStorage.getItem('vocab_biz_pro_v10'); // v10 切片版
                 const savedSyncId = localStorage.getItem('vocab_biz_sync_id');
+                // 兼容旧数据
+                const oldData = localStorage.getItem('vocab_biz_pro_v7') || localStorage.getItem('vocab_biz_pro_v6');
+                
                 if (savedSyncId) setSyncId(savedSyncId);
-                if (savedData) setVocabList(JSON.parse(savedData));
-                else setVocabList(SEED_VOCAB);
+                
+                if (savedData) {
+                    setVocabList(JSON.parse(savedData));
+                } else if (oldData) {
+                    setVocabList(JSON.parse(oldData));
+                } else {
+                    setVocabList(SEED_VOCAB);
+                }
             }, []);
 
             useEffect(() => {
                 if (vocabList.length > 0) {
-                    localStorage.setItem('vocab_biz_pro_v6', JSON.stringify(vocabList));
+                    localStorage.setItem('vocab_biz_pro_v10', JSON.stringify(vocabList));
                 }
             }, [vocabList]);
 
@@ -129,39 +141,24 @@
                 const currentWord = sessionQueue[currentCardIndex];
                 let { easeFactor=2.5, repetitions=0, interval=0 } = currentWord;
                 let nextReviewDate = Date.now();
-                
-                if (grade === 0) {
-                    repetitions = 0; interval = 0; easeFactor = Math.max(1.3, easeFactor - 0.2); nextReviewDate += 60 * 1000;
-                } else {
+                if (grade === 0) { repetitions = 0; interval = 0; easeFactor = Math.max(1.3, easeFactor - 0.2); nextReviewDate += 60 * 1000; } 
+                else {
                     if (grade === 3) easeFactor += 0.15;
                     if (grade === 1) easeFactor = Math.max(1.3, easeFactor - 0.15);
-                    if (repetitions === 0) interval = 1;
-                    else if (repetitions === 1) interval = 6;
-                    else {
-                        let modifier = 1;
-                        if (grade === 1) modifier = 1.2;
-                        if (grade === 2) modifier = easeFactor;
-                        if (grade === 3) modifier = easeFactor * 1.3;
-                        interval = Math.ceil(interval * modifier);
-                    }
-                    repetitions += 1;
-                    nextReviewDate += interval * 24 * 60 * 60 * 1000;
+                    if (repetitions === 0) interval = 1; else if (repetitions === 1) interval = 6;
+                    else { let modifier = 1; if (grade === 1) modifier = 1.2; if (grade === 2) modifier = easeFactor; if (grade === 3) modifier = easeFactor * 1.3; interval = Math.ceil(interval * modifier); }
+                    repetitions += 1; nextReviewDate += interval * 24 * 60 * 60 * 1000;
                 }
                 const updatedList = vocabList.map(w => w.id === currentWord.id ? { ...w, nextReview: nextReviewDate, easeFactor, interval, repetitions } : w);
                 setVocabList(updatedList);
                 setSessionStats(prev => ({ correct: grade >= 2 ? prev.correct + 1 : prev.correct, total: prev.total + 1 }));
-                if (currentCardIndex < sessionQueue.length - 1) {
-                    setIsFlipped(false);
-                    setTimeout(() => { setCurrentCardIndex(prev => prev + 1); speakWord(sessionQueue[currentCardIndex + 1].word); }, 200);
-                } else { setView('summary'); }
+                if (currentCardIndex < sessionQueue.length - 1) { setIsFlipped(false); setTimeout(() => { setCurrentCardIndex(prev => prev + 1); speakWord(sessionQueue[currentCardIndex + 1].word); }, 200); } 
+                else { setView('summary'); }
             };
 
             const openAddEdit = (word = null) => {
-                if (word) {
-                    setEditingWord(word); setInputWord(word.word); setInputDef(word.definition); setInputEn(word.exEn||''); setInputCn(word.exCn||'');
-                } else {
-                    setEditingWord(null); setInputWord(''); setInputDef(''); setInputEn(''); setInputCn('');
-                }
+                if (word) { setEditingWord(word); setInputWord(word.word); setInputDef(word.definition); setInputEn(word.exEn||''); setInputCn(word.exCn||''); } 
+                else { setEditingWord(null); setInputWord(''); setInputDef(''); setInputEn(''); setInputCn(''); }
                 setView('add');
             };
 
@@ -173,83 +170,156 @@
                 setView('stats'); 
             };
             const handleDelete = (id) => { if(confirm('确定删除？')) setVocabList(prev => prev.filter(w => w.id !== id)); };
-            const handleResetAll = () => { if (prompt("⚠️ 确认清空请输入 'RESET'") === 'RESET') { setVocabList([]); localStorage.setItem('vocab_biz_pro_v6', JSON.stringify([])); alert("已清空"); } };
-            const handleImport = () => {
-                if(!importTxt) return;
-                const lines = importTxt.split('\n');
-                const newWords = [];
-                lines.forEach(line => {
-                    if(!line.trim()) return;
-                    let w, d, en = "", cn = "";
-                    if (line.includes('\t')) { const parts = line.split('\t'); w = parts[0]?.trim(); d = parts[1]?.trim(); en = parts[2]?.trim()||""; cn = parts[3]?.trim()||""; } 
-                    else { const parts = line.split(/[,，]/); w = parts[0]?.trim(); d = parts[1]?.trim(); if (parts.length > 2) en = parts[2].trim(); if (parts.length > 3) cn = parts.slice(3).join(',').trim(); }
-                    if(w && d) newWords.push({ id: Date.now() + Math.random(), word: w, definition: d, exEn: en, exCn: cn, easeFactor: 2.5, interval: 0, repetitions: 0, nextReview: 0 });
-                });
-                if(newWords.length > 0) { setVocabList(prev => [...prev, ...newWords]); alert(`导入 ${newWords.length} 个单词`); setView('stats'); setImportTxt(''); }
-            };
-            const handleExport = () => {
-                if(vocabList.length === 0) { alert("无内容"); return; }
-                let content = "单词\t释义\t英文例句\t中文例句\n";
-                vocabList.forEach(item => { const clean = (s) => s ? s.replace(/[\r\n\t]/g, " ") : ""; content += `${clean(item.word)}\t${clean(item.definition)}\t${clean(item.exEn)}\t${clean(item.exCn)}\n`; });
-                const blob = new Blob(['\uFEFF' + content], { type: 'text/plain;charset=utf-8' });
-                const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `VocabBackup.txt`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
-            };
-            const openSearch = (word, type) => {
-                let url = ""; if (type === 'bing') url = `https://cn.bing.com/dict/search?q=${encodeURIComponent(word)}`; else if (type === 'images') url = `https://www.google.com/search?tbm=isch&q=${encodeURIComponent(word + " business concept")}`; else if (type === 'wiki') url = `https://en.wikipedia.org/wiki/${encodeURIComponent(word)}`; window.open(url, '_blank');
-            };
+            const handleResetAll = () => { if (prompt("⚠️ 确认清空请输入 'RESET'") === 'RESET') { setVocabList([]); localStorage.setItem('vocab_biz_pro_v10', JSON.stringify([])); alert("已清空"); } };
+            const handleImport = () => { if(!importTxt) return; const lines = importTxt.split('\n'); const newWords = []; lines.forEach(line => { if(!line.trim()) return; let w, d, en = "", cn = ""; if (line.includes('\t')) { const parts = line.split('\t'); w = parts[0]?.trim(); d = parts[1]?.trim(); en = parts[2]?.trim()||""; cn = parts[3]?.trim()||""; } else { const parts = line.split(/[,，]/); w = parts[0]?.trim(); d = parts[1]?.trim(); if (parts.length > 2) en = parts[2].trim(); if (parts.length > 3) cn = parts.slice(3).join(',').trim(); } if(w && d) newWords.push({ id: Date.now() + Math.random(), word: w, definition: d, exEn: en, exCn: cn, easeFactor: 2.5, interval: 0, repetitions: 0, nextReview: 0 }); }); if(newWords.length > 0) { setVocabList(prev => [...prev, ...newWords]); alert(`导入 ${newWords.length} 个单词`); setView('stats'); setImportTxt(''); } };
+            const handleExport = () => { if(vocabList.length === 0) { alert("无内容"); return; } let content = "单词\t释义\t英文例句\t中文例句\n"; vocabList.forEach(item => { const clean = (s) => s ? s.replace(/[\r\n\t]/g, " ") : ""; content += `${clean(item.word)}\t${clean(item.definition)}\t${clean(item.exEn)}\t${clean(item.exCn)}\n`; }); const blob = new Blob(['\uFEFF' + content], { type: 'text/plain;charset=utf-8' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `VocabBackup.txt`; document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url); };
+            const openSearch = (word, type) => { let url = ""; if (type === 'bing') url = `https://cn.bing.com/dict/search?q=${encodeURIComponent(word)}`; else if (type === 'images') url = `https://www.google.com/search?tbm=isch&q=${encodeURIComponent(word + " business concept")}`; else if (type === 'wiki') url = `https://en.wikipedia.org/wiki/${encodeURIComponent(word)}`; window.open(url, '_blank'); };
 
-            // 🔥 核心修改：增加 LZ-String 压缩逻辑
+            // 🔥 核心升级：切片同步逻辑 (Chunking)
             const saveToCloud = async () => {
                 if (!isFirebaseReady) { alert("Firebase 未配置！"); return; }
                 if (!syncId || syncId.length < 3) { alert("暗号太短！"); return; }
+                
                 setLoadingCloud(true);
+                setCloudStatus("正在压缩数据...");
+                
                 try {
-                    // 1. 转成 JSON 字符串
+                    // 1. 压缩
                     const jsonString = JSON.stringify(vocabList);
-                    // 2. 压缩字符串 (体积减少80%以上)
                     const compressed = LZString.compressToUTF16(jsonString);
+                    const totalLength = compressed.length;
                     
-                    await setDoc(doc(db, 'vocab_users', syncId), { 
-                        updatedAt: Date.now(), 
-                        data: compressed, // 存压缩后的数据
-                        isCompressed: true // 标记一下
+                    // 2. 计算需要切几片
+                    const totalChunks = Math.ceil(totalLength / CHUNK_SIZE);
+                    setCloudStatus(`准备上传: ${totalChunks} 个碎片 (总大小: ${(totalLength/1024).toFixed(1)}KB)`);
+
+                    // 3. 准备批量写入 (Batch Write)
+                    const batch = writeBatch(db);
+
+                    // 3.1 写入元数据 (Meta Data)
+                    const metaRef = doc(db, 'vocab_users', syncId);
+                    batch.set(metaRef, {
+                        updatedAt: Date.now(),
+                        totalChunks: totalChunks,
+                        isChunked: true,
+                        isCompressed: true
                     });
+
+                    // 3.2 写入每个碎片
+                    for (let i = 0; i < totalChunks; i++) {
+                        const start = i * CHUNK_SIZE;
+                        const end = start + CHUNK_SIZE;
+                        const chunkData = compressed.substring(start, end);
+                        
+                        // 创建碎片文档，命名规则：syncId_chunk_0, syncId_chunk_1...
+                        const chunkRef = doc(db, 'vocab_users', `${syncId}_chunk_${i}`);
+                        batch.set(chunkRef, {
+                            index: i,
+                            data: chunkData
+                        });
+                    }
+
+                    setCloudStatus("正在发送数据到云端...");
+                    // 4. 提交
+                    await batch.commit();
+
                     localStorage.setItem('vocab_biz_sync_id', syncId);
-                    alert(`✅ 压缩并备份成功！\n原始: ${vocabList.length}词 \n状态: 已加速上传`);
-                } catch (e) { alert("备份失败: " + e.message + "\n(如文件依然太大，请使用【导出备份】功能)"); }
+                    alert(`✅ 备份成功！\n\n数据已切分为 ${totalChunks} 块安全传输。\n请在其他设备使用相同暗号恢复。`);
+                } catch (e) {
+                    console.error(e);
+                    alert("备份失败: " + e.message + "\n(如依然失败，请使用文件导出功能)");
+                }
                 setLoadingCloud(false);
+                setCloudStatus("");
             };
 
             const restoreFromCloud = async () => {
                 if (!isFirebaseReady) { alert("Firebase 未配置！"); return; }
                 if (!syncId) { alert("请输入暗号！"); return; }
                 if (!confirm(`确定恢复 [${syncId}] 吗？`)) return;
+                
                 setLoadingCloud(true);
+                setCloudStatus("正在连接云端...");
+                
                 try {
-                    const docSnap = await getDoc(doc(db, 'vocab_users', syncId));
-                    if (docSnap.exists()) {
-                        const cloudData = docSnap.data();
-                        let finalData = [];
-                        
-                        // 3. 解压逻辑 (兼容旧版数据)
-                        if (cloudData.isCompressed && cloudData.data) {
-                            const decompressed = LZString.decompressFromUTF16(cloudData.data);
-                            finalData = JSON.parse(decompressed);
-                        } else {
-                            // 如果是旧版未压缩数据，直接读
-                            finalData = cloudData.vocabList || [];
-                        }
+                    // 1. 获取元数据
+                    const metaRef = doc(db, 'vocab_users', syncId);
+                    const metaSnap = await getDoc(metaRef);
 
-                        setVocabList(finalData);
-                        localStorage.setItem('vocab_biz_sync_id', syncId);
-                        alert(`🎉 恢复成功！\n下载了 ${finalData.length} 个单词`);
-                    } else { alert(`❌ 找不到数据`); }
-                } catch (e) { alert("恢复失败: " + e.message); }
+                    if (!metaSnap.exists()) {
+                        throw new Error("云端找不到该暗号的数据。");
+                    }
+
+                    const meta = metaSnap.data();
+                    let finalCompressedString = "";
+
+                    // 2. 判断是否是切片数据
+                    if (meta.isChunked && meta.totalChunks > 0) {
+                        setCloudStatus(`发现 ${meta.totalChunks} 个碎片，开始下载...`);
+                        
+                        // 并行下载所有碎片
+                        const promises = [];
+                        for (let i = 0; i < meta.totalChunks; i++) {
+                            const chunkRef = doc(db, 'vocab_users', `${syncId}_chunk_${i}`);
+                            promises.push(getDoc(chunkRef));
+                        }
+                        
+                        const chunkSnaps = await Promise.all(promises);
+                        
+                        // 按顺序拼装
+                        // 注意：Promise.all 返回顺序与输入顺序一致
+                        chunkSnaps.forEach(snap => {
+                            if (snap.exists()) {
+                                finalCompressedString += snap.data().data;
+                            }
+                        });
+
+                    } else if (meta.data) {
+                        // 兼容旧版（非切片）
+                        setCloudStatus("发现旧版数据，正在下载...");
+                        finalCompressedString = meta.data; // 这里旧版如果是压缩的，字段名可能有变，不过既然是重写逻辑，我们假设用户只用新版
+                        // 如果用户之前用 v7 上传过，这里可能读取方式要兼容，但为了稳健，建议这里只处理新逻辑。
+                        // 如果读不到 data，就说明是旧版结构差异，建议用户重新备份。
+                         if (meta.isCompressed && meta.data) {
+                             finalCompressedString = meta.data;
+                         }
+                    }
+
+                    if (!finalCompressedString) {
+                         // 再次尝试读取 v6/v7 的旧格式 (直接存的 vocabList)
+                         if (meta.vocabList) {
+                             setVocabList(meta.vocabList);
+                             localStorage.setItem('vocab_biz_sync_id', syncId);
+                             alert("恢复成功 (旧版格式)！");
+                             setLoadingCloud(false);
+                             setCloudStatus("");
+                             return;
+                         }
+                         throw new Error("数据格式无法解析，请重新备份。");
+                    }
+
+                    setCloudStatus("正在解压数据...");
+                    // 3. 解压
+                    const decompressed = LZString.decompressFromUTF16(finalCompressedString);
+                    if (!decompressed) throw new Error("解压失败，数据可能损坏。");
+                    
+                    const finalData = JSON.parse(decompressed);
+                    setVocabList(finalData);
+                    localStorage.setItem('vocab_biz_sync_id', syncId);
+                    
+                    alert(`🎉 恢复成功！\n成功拼装并读取了 ${finalData.length} 个单词。`);
+
+                } catch (e) {
+                    console.error(e);
+                    alert("恢复失败: " + e.message);
+                }
                 setLoadingCloud(false);
+                setCloudStatus("");
             };
 
             return (
                 <div className="h-screen w-full overflow-hidden bg-gray-50 font-sans">
+                    {/* ... 视图部分 ... */}
                     {view === 'home' && (
                         <div className="flex flex-col items-center p-6 h-full max-w-md mx-auto relative pt-12 overflow-y-auto">
                             <div className="absolute top-4 right-4"><button onClick={() => setView('cloud')} className="p-2 bg-white rounded-full shadow text-indigo-500 relative hover:bg-indigo-50 transition"><Cloud size={20} /></button></div>
@@ -264,7 +334,6 @@
                             <div className="mt-auto pt-8 border-t border-gray-200 w-full"><button onClick={handleResetAll} className="w-full text-xs text-red-400 hover:text-red-600 py-2 flex items-center justify-center gap-1 opacity-60 hover:opacity-100 transition"><AlertTriangle size={12} /> 一键清空</button></div>
                         </div>
                     )}
-
                     {view === 'add' && (
                         <div className="p-6 h-full flex flex-col max-w-md mx-auto pt-8 bg-white">
                             <h2 className="text-xl font-bold text-gray-800 mb-6 flex items-center gap-2">{editingWord ? <Edit3 className="text-indigo-600"/> : <Plus className="text-green-600"/>}{editingWord ? '修改单词' : '添加新单词'}</h2>
@@ -283,28 +352,6 @@
                             </div>
                         </div>
                     )}
-
-                    {view === 'cloud' && (
-                        <div className="p-6 h-full flex flex-col max-w-md mx-auto pt-12">
-                            <h2 className="text-2xl font-bold text-gray-800 mb-6 flex items-center gap-2"><Cloud className="text-indigo-600"/> 云端同步中心</h2>
-                            {!isFirebaseReady ? ( <div className="bg-red-50 text-red-600 p-4 rounded-xl text-sm mb-6">❌ 未配置 Firebase Key，请检查代码。</div> ) : (
-                                <div className="space-y-6">
-                                    <div className="bg-white p-5 rounded-2xl shadow-sm border border-indigo-100">
-                                        <label className="block text-xs font-bold text-gray-400 uppercase mb-2 flex items-center gap-1"><Key size={12}/> 设置同步暗号 (Sync ID)</label>
-                                        <input className="w-full text-lg font-bold text-indigo-600 p-3 border-b-2 border-indigo-100 focus:border-indigo-500 outline-none bg-transparent placeholder-indigo-200" placeholder="例如: Leo888" value={syncId} onChange={e => setSyncId(e.target.value)}/>
-                                        <div className="flex items-center gap-1 text-xs text-green-600 mt-2"><FileArchive size={12}/> <span>已启用极速压缩传输模式</span></div>
-                                    </div>
-                                    <div className="bg-yellow-50 text-yellow-700 p-3 rounded-lg text-xs flex gap-2 items-start"><WifiOff size={14} className="mt-0.5 shrink-0"/><span>数据量大时，请务必开启 VPN 全局模式，否则可能传输失败。</span></div>
-                                    <div className="grid grid-cols-2 gap-4">
-                                        <button onClick={saveToCloud} disabled={loadingCloud} className="bg-indigo-600 text-white p-4 rounded-xl shadow-lg flex flex-col items-center justify-center gap-2 disabled:opacity-50 active:scale-95 transition"><UploadCloud size={24}/> <span className="font-bold">上传备份</span></button>
-                                        <button onClick={restoreFromCloud} disabled={loadingCloud} className="bg-white border border-gray-200 text-gray-700 p-4 rounded-xl hover:bg-gray-50 flex flex-col items-center justify-center gap-2 disabled:opacity-50 active:scale-95 transition"><DownloadCloud size={24}/> <span className="font-bold">下载恢复</span></button>
-                                    </div>
-                                </div>
-                            )}
-                            <button onClick={()=>setView('home')} className="mt-auto w-full py-4 bg-gray-100 rounded-xl font-bold text-gray-500 hover:bg-gray-200 transition">返回</button>
-                        </div>
-                    )}
-                    
                     {view === 'import' && (
                         <div className="p-6 h-full flex flex-col max-w-md mx-auto pt-8">
                             <h2 className="text-xl font-bold text-gray-800 mb-4 flex items-center gap-2"><FileUp/> 批量导入</h2>
@@ -313,7 +360,6 @@
                             <div className="flex gap-3"><button onClick={()=>setView('home')} className="flex-1 py-3 bg-gray-100 rounded-xl font-bold text-gray-600">取消</button><button onClick={handleImport} disabled={!importTxt} className="flex-1 py-3 bg-indigo-600 rounded-xl font-bold text-white disabled:opacity-50">开始导入</button></div>
                         </div>
                     )}
-
                     {view === 'stats' && (
                         <div className="p-6 h-full flex flex-col max-w-md mx-auto">
                             <div className="flex items-center justify-between mb-6"><h2 className="text-xl font-bold text-gray-800">词汇管理 ({vocabList.length})</h2><button onClick={()=>setView('home')} className="p-2 bg-gray-200 rounded-full hover:bg-gray-300 transition"><X size={20}/></button></div>
@@ -331,7 +377,6 @@
                             </div>
                         </div>
                     )}
-
                     {view === 'learn' && sessionQueue[currentCardIndex] && (
                         <div className="h-full flex flex-col p-6 max-w-md mx-auto">
                             <div className="flex justify-end mb-4"><button onClick={() => setView('home')} className="text-gray-400 flex items-center gap-1 text-sm font-medium hover:text-gray-600"><Home size={16}/> 退出</button></div>
@@ -370,12 +415,37 @@
                             </div>
                         </div>
                     )}
-                    
                     {view === 'summary' && (
                         <div className="h-full flex flex-col items-center justify-center p-6 bg-white">
                             <div className="w-20 h-20 bg-green-100 text-green-600 rounded-full flex items-center justify-center mb-6 animate-bounce"><Check size={40} /></div>
                             <h2 className="text-2xl font-bold text-gray-800 mb-2">Session Complete!</h2>
                             <button onClick={() => setView('home')} className="w-full max-w-xs py-4 bg-gray-100 text-gray-600 font-bold rounded-xl hover:bg-gray-200 transition">Back to Home</button>
+                        </div>
+                    )}
+
+                    {view === 'cloud' && (
+                        <div className="p-6 h-full flex flex-col max-w-md mx-auto pt-12">
+                            <h2 className="text-2xl font-bold text-gray-800 mb-6 flex items-center gap-2"><Cloud className="text-indigo-600"/> Firebase 切片同步</h2>
+                            {!isFirebaseReady ? ( <div className="bg-red-50 text-red-600 p-4 rounded-xl text-sm mb-6">❌ 未配置 Firebase Key，请检查代码。</div> ) : (
+                                <div className="space-y-6">
+                                    <div className="bg-white p-5 rounded-2xl shadow-sm border border-indigo-100">
+                                        <label className="block text-xs font-bold text-gray-400 uppercase mb-2 flex items-center gap-1"><Key size={12}/> 设置同步暗号 (Sync ID)</label>
+                                        <input className="w-full text-lg font-bold text-indigo-600 p-3 border-b-2 border-indigo-100 focus:border-indigo-500 outline-none bg-transparent placeholder-indigo-200" placeholder="例如: Leo888" value={syncId} onChange={e => setSyncId(e.target.value)}/>
+                                        <div className="flex items-center gap-1 text-xs text-green-600 mt-2"><Layers size={12}/> <span>数据将切片上传，确保大文件稳定性</span></div>
+                                    </div>
+                                    {cloudStatus && (
+                                        <div className="bg-blue-50 text-blue-700 p-3 rounded-lg text-xs flex gap-2 items-center animate-pulse">
+                                            <div className="w-3 h-3 rounded-full border-2 border-blue-700 border-t-transparent animate-spin"></div>
+                                            <span>{cloudStatus}</span>
+                                        </div>
+                                    )}
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <button onClick={saveToCloud} disabled={loadingCloud} className="bg-indigo-600 text-white p-4 rounded-xl shadow-lg flex flex-col items-center justify-center gap-2 disabled:opacity-50 active:scale-95 transition"><UploadCloud size={24}/> <span className="font-bold">上传备份</span></button>
+                                        <button onClick={restoreFromCloud} disabled={loadingCloud} className="bg-white border border-gray-200 text-gray-700 p-4 rounded-xl hover:bg-gray-50 flex flex-col items-center justify-center gap-2 disabled:opacity-50 active:scale-95 transition"><DownloadCloud size={24}/> <span className="font-bold">下载恢复</span></button>
+                                    </div>
+                                </div>
+                            )}
+                            <button onClick={()=>setView('home')} className="mt-auto w-full py-4 bg-gray-100 rounded-xl font-bold text-gray-500 hover:bg-gray-200 transition">返回</button>
                         </div>
                     )}
                 </div>
